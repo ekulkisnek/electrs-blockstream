@@ -1526,13 +1526,23 @@ fn address_to_scripthash(addr: &str, network: Network) -> Result<FullHash, HttpE
     #[cfg(not(feature = "liquid"))]
     let addr = address::Address::from_str(addr)?;
     #[cfg(feature = "liquid")]
-    let addr = address::Address::parse_with_params(addr, network.address_params())?;
+    let addr = address::Address::parse_with_params(addr, network.address_params()).or_else(|err| {
+        // LWK CustomElements uses regtest address encodings. On Alpha these are
+        // read-only script lookup aliases, not a change to the chain identity.
+        let lower = addr.to_ascii_lowercase();
+        if network == Network::Alpha && (lower.starts_with("ert1") || lower.starts_with("el1")) {
+            address::Address::parse_with_params(addr, &address::AddressParams::ELEMENTS)
+        } else {
+            Err(err)
+        }
+    })?;
 
     #[cfg(not(feature = "liquid"))]
     let is_expected_net = addr.is_valid_for_network(network.into());
 
     #[cfg(feature = "liquid")]
-    let is_expected_net = addr.params == network.address_params();
+    let is_expected_net = addr.params == network.address_params()
+        || (network == Network::Alpha && addr.params == &address::AddressParams::ELEMENTS);
 
     if !is_expected_net {
         bail!(HttpError::from("Address on invalid network".to_string()))
@@ -1638,6 +1648,54 @@ mod tests {
     use hyper::StatusCode;
     use serde_json::Value;
     use std::collections::HashMap;
+
+    #[cfg(feature = "liquid")]
+    #[test]
+    fn alpha_address_lookup_accepts_lwk_alias_only_on_alpha() {
+        use crate::chain::Network;
+        use elements::{Address, AddressParams, Script};
+        let mut bytes = vec![0, 20];
+        bytes.extend_from_slice(&[42; 20]);
+        let script = Script::from(bytes);
+        let native = Address::from_script(&script, None, &AddressParams::ALPHA).unwrap();
+        let alias = Address::from_script(&script, None, &AddressParams::ELEMENTS).unwrap();
+        let testnet = Address::from_script(&script, None, &AddressParams::LIQUID_TESTNET).unwrap();
+        let lookup = super::address_to_scripthash;
+        assert_eq!(
+            lookup(&native.to_string(), Network::Alpha).unwrap(),
+            lookup(&alias.to_string(), Network::Alpha).unwrap()
+        );
+        let key = elements::secp256k1_zkp::PublicKey::from_slice(&[
+            2, 121, 190, 102, 126, 249, 220, 187, 172, 85, 160, 98, 149, 206,
+            135, 11, 7, 2, 155, 252, 219, 45, 206, 40, 217, 89, 242, 129, 91,
+            22, 248, 23, 152,
+        ])
+        .unwrap();
+        let confidential = Address::from_script(&script, Some(key), &AddressParams::ELEMENTS).unwrap();
+        assert_eq!(
+            lookup(&native.to_string(), Network::Alpha).unwrap(),
+            lookup(&confidential.to_string(), Network::Alpha).unwrap()
+        );
+        assert!(lookup(&confidential.to_string(), Network::Liquid).is_err());
+        assert_eq!(
+            lookup(&alias.to_string().to_ascii_uppercase(), Network::Alpha).unwrap(),
+            lookup(&native.to_string(), Network::Alpha).unwrap()
+        );
+        let mut legacy_bytes = vec![0x76, 0xa9, 20];
+        legacy_bytes.extend_from_slice(&[42; 20]);
+        legacy_bytes.extend_from_slice(&[0x88, 0xac]);
+        let legacy = Address::from_script(
+            &Script::from(legacy_bytes), None, &AddressParams::ELEMENTS,
+        ).unwrap();
+        assert!(lookup(&legacy.to_string(), Network::Alpha).is_err());
+        assert!(lookup(&testnet.to_string(), Network::Alpha).is_err());
+        assert!(lookup(&alias.to_string(), Network::Liquid).is_err());
+        assert!(lookup(&native.to_string(), Network::LiquidRegtest).is_err());
+        let mut damaged = alias.to_string();
+        damaged.pop();
+        damaged.push('!');
+        assert!(lookup(&damaged, Network::Alpha).is_err());
+    }
 
     #[cfg(feature = "liquid")]
     #[test]
