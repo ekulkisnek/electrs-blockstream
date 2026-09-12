@@ -1,4 +1,6 @@
 target
+target-codec/
+target-address/
 *db/
 *.log
 *.sublime*

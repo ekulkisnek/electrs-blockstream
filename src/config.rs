@@ -366,7 +366,7 @@ impl Config {
             .value_of("parent_network")
             .map(|s| s.parse().expect("invalid parent network"))
             .unwrap_or_else(|| match network_type {
-                Network::Liquid => BNetwork::Bitcoin,
+                Network::Liquid | Network::Alpha => BNetwork::Bitcoin,
                 // XXX liquid testnet/regtest don't have a parent chain
                 Network::LiquidTestnet | Network::LiquidRegtest => BNetwork::Regtest,
             });
@@ -399,6 +399,8 @@ impl Config {
             #[cfg(feature = "liquid")]
             Network::Liquid => 7041,
             #[cfg(feature = "liquid")]
+            Network::Alpha => 7065,
+            #[cfg(feature = "liquid")]
             Network::LiquidTestnet | Network::LiquidRegtest => 7040,
         };
         let default_electrum_port = match network_type {
@@ -415,6 +417,8 @@ impl Config {
 
             #[cfg(feature = "liquid")]
             Network::Liquid => 51000,
+            #[cfg(feature = "liquid")]
+            Network::Alpha => 50401,
             #[cfg(feature = "liquid")]
             Network::LiquidTestnet => 51301,
             #[cfg(feature = "liquid")]
@@ -435,6 +439,8 @@ impl Config {
             #[cfg(feature = "liquid")]
             Network::Liquid => 3000,
             #[cfg(feature = "liquid")]
+            Network::Alpha => 3004,
+            #[cfg(feature = "liquid")]
             Network::LiquidTestnet => 3001,
             #[cfg(feature = "liquid")]
             Network::LiquidRegtest => 3002,
@@ -453,6 +459,8 @@ impl Config {
 
             #[cfg(feature = "liquid")]
             Network::Liquid => 34224,
+            #[cfg(feature = "liquid")]
+            Network::Alpha => 24225,
             #[cfg(feature = "liquid")]
             Network::LiquidTestnet => 44324,
             #[cfg(feature = "liquid")]
@@ -638,6 +646,8 @@ pub fn get_network_subdir(network: Network) -> Option<&'static str> {
 
         #[cfg(feature = "liquid")]
         Network::Liquid => Some("liquidv1"),
+        #[cfg(feature = "liquid")]
+        Network::Alpha => Some("elements-v11"),
         #[cfg(feature = "liquid")]
         Network::LiquidTestnet => Some("liquidtestnet"),
         #[cfg(feature = "liquid")]

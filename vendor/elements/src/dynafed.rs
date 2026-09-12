@@ -721,6 +721,8 @@ mod tests {
             version: Default::default(),
             prev_blockhash: BlockHash::all_zeros(),
             merkle_root: TxMerkleNode::all_zeros(),
+            withdrawal_bundle_hash: None,
+            alpha: Default::default(),
             time: Default::default(),
             height: Default::default(),
         };

@@ -201,6 +201,58 @@ impl Default for ExtData {
     }
 }
 
+/// Alpha header extensions, selected by version bits 16 through 20.
+/// Absent fields decode to zero, matching the native node.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub struct AlphaHeader {
+    /// Commitment to the optional BMM proof.
+    pub bmm_proof: [u8; 32],
+    /// Exchange state commitment.
+    pub exchange_state: [u8; 32],
+    /// Forced-action inbox commitment.
+    pub forced_inbox: [u8; 32],
+    /// Deposit inbox commitment.
+    pub deposit_inbox: [u8; 32],
+    /// Authenticated parent height when both inboxes are present.
+    pub parent_height: u32,
+    /// Processed forced-action cursor.
+    pub forced_cursor: u64,
+    /// Processed deposit cursor.
+    pub deposit_cursor: u64,
+    /// Oldest outstanding source parent height.
+    pub oldest_parent_height: u64,
+}
+serde_struct_impl!(AlphaHeader, bmm_proof, exchange_state, forced_inbox, deposit_inbox, parent_height, forced_cursor, deposit_cursor, oldest_parent_height);
+
+impl AlphaHeader {
+    fn encode_tail<S: io::Write>(&self, version: u32, mut s: S) -> Result<usize, encode::Error> {
+        let mut len = 0;
+        if version & (1 << 19) != 0 { len += self.exchange_state.consensus_encode(&mut s)?; }
+        if version & (1 << 18) != 0 { len += self.forced_inbox.consensus_encode(&mut s)?; }
+        if version & (1 << 17) != 0 { len += self.deposit_inbox.consensus_encode(&mut s)?; }
+        if version & (3 << 17) == (3 << 17) { len += self.parent_height.consensus_encode(&mut s)?; }
+        if version & (1 << 16) != 0 {
+            len += self.forced_cursor.consensus_encode(&mut s)?;
+            len += self.deposit_cursor.consensus_encode(&mut s)?;
+            len += self.oldest_parent_height.consensus_encode(&mut s)?;
+        }
+        Ok(len)
+    }
+
+    fn decode_tail<D: io::Read>(&mut self, version: u32, mut d: D) -> Result<(), encode::Error> {
+        if version & (1 << 19) != 0 { self.exchange_state = Decodable::consensus_decode(&mut d)?; }
+        if version & (1 << 18) != 0 { self.forced_inbox = Decodable::consensus_decode(&mut d)?; }
+        if version & (1 << 17) != 0 { self.deposit_inbox = Decodable::consensus_decode(&mut d)?; }
+        if version & (3 << 17) == (3 << 17) { self.parent_height = Decodable::consensus_decode(&mut d)?; }
+        if version & (1 << 16) != 0 {
+            self.forced_cursor = Decodable::consensus_decode(&mut d)?;
+            self.deposit_cursor = Decodable::consensus_decode(&mut d)?;
+            self.oldest_parent_height = Decodable::consensus_decode(&mut d)?;
+        }
+        Ok(())
+    }
+}
+
 /// Elements block header
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct BlockHeader {
@@ -212,6 +264,8 @@ pub struct BlockHeader {
     pub merkle_root: TxMerkleNode,
     /// Current drivechain withdrawal bundle committed by this header
     pub withdrawal_bundle_hash: Option<BlockHash>,
+    /// Native Alpha commitments and inbox cursors.
+    pub alpha: AlphaHeader,
     /// Block timestamp
     pub time: u32,
     /// Block height
@@ -219,7 +273,7 @@ pub struct BlockHeader {
     /// Block signature and dynamic federation-related data
     pub ext: ExtData,
 }
-serde_struct_impl!(BlockHeader, version, prev_blockhash, merkle_root, withdrawal_bundle_hash, time, height, ext);
+serde_struct_impl!(BlockHeader, version, prev_blockhash, merkle_root, withdrawal_bundle_hash, alpha, time, height, ext);
 
 impl BlockHeader {
     /// Return the block hash.
@@ -242,6 +296,9 @@ impl BlockHeader {
         if let Some(bundle_hash) = self.withdrawal_bundle_hash {
             bundle_hash.consensus_encode(&mut enc).unwrap();
         }
+        if version & (1 << 20) != 0 {
+            self.alpha.bmm_proof.consensus_encode(&mut enc).unwrap();
+        }
         self.time.consensus_encode(&mut enc).unwrap();
         self.height.consensus_encode(&mut enc).unwrap();
         match self.ext {
@@ -253,6 +310,7 @@ impl BlockHeader {
                 proposed.consensus_encode(&mut enc).unwrap();
             },
         }
+        self.alpha.encode_tail(version, &mut enc).unwrap();
         BlockHash::from_engine(enc)
     }
 
@@ -323,10 +381,22 @@ impl Encodable for BlockHeader {
         if let Some(bundle_hash) = self.withdrawal_bundle_hash {
             len += bundle_hash.consensus_encode(&mut s)?;
         }
-        Ok(len +
-            self.time.consensus_encode(&mut s)? +
-            self.height.consensus_encode(&mut s)? +
-            self.ext.consensus_encode(&mut s)?)
+        if version & (1 << 20) != 0 {
+            len += self.alpha.bmm_proof.consensus_encode(&mut s)?;
+        }
+        len += self.time.consensus_encode(&mut s)? + self.height.consensus_encode(&mut s)?;
+        match &self.ext {
+            ExtData::Proof { challenge, solution } => {
+                len += challenge.consensus_encode(&mut s)? + solution.consensus_encode(&mut s)?;
+                len += self.alpha.encode_tail(version, &mut s)?;
+            }
+            ExtData::Dynafed { current, proposed, signblock_witness } => {
+                len += current.consensus_encode(&mut s)? + proposed.consensus_encode(&mut s)?;
+                len += self.alpha.encode_tail(version, &mut s)?;
+                len += signblock_witness.consensus_encode(&mut s)?;
+            }
+        }
+        Ok(len)
     }
 }
 
@@ -350,25 +420,32 @@ impl Decodable for BlockHeader {
             None
         };
 
+        let mut alpha = AlphaHeader::default();
+        if version & (1 << 20) != 0 {
+            alpha.bmm_proof = Decodable::consensus_decode(&mut d)?;
+        }
+        let time = Decodable::consensus_decode(&mut d)?;
+        let height = Decodable::consensus_decode(&mut d)?;
+        let ext = if is_dyna {
+            let current = Decodable::consensus_decode(&mut d)?;
+            let proposed = Decodable::consensus_decode(&mut d)?;
+            alpha.decode_tail(version, &mut d)?;
+            ExtData::Dynafed { current, proposed, signblock_witness: Decodable::consensus_decode(&mut d)? }
+        } else {
+            let challenge = Decodable::consensus_decode(&mut d)?;
+            let solution = Decodable::consensus_decode(&mut d)?;
+            alpha.decode_tail(version, &mut d)?;
+            ExtData::Proof { challenge, solution }
+        };
         Ok(BlockHeader {
             version,
             prev_blockhash,
             merkle_root,
             withdrawal_bundle_hash,
-            time: Decodable::consensus_decode(&mut d)?,
-            height: Decodable::consensus_decode(&mut d)?,
-            ext: if is_dyna {
-                ExtData::Dynafed {
-                    current: Decodable::consensus_decode(&mut d)?,
-                    proposed: Decodable::consensus_decode(&mut d)?,
-                    signblock_witness: Decodable::consensus_decode(&mut d)?,
-                }
-            } else {
-                ExtData::Proof {
-                    challenge: Decodable::consensus_decode(&mut d)?,
-                    solution: Decodable::consensus_decode(&mut d)?,
-                }
-            },
+            alpha,
+            time,
+            height,
+            ext,
         })
     }
 }
@@ -380,9 +457,27 @@ pub struct Block {
     pub header: BlockHeader,
     /// Complete list of transaction in the block
     pub txdata: Vec<Transaction>,
+    /// Optional native BMM proof payload, present only with header version bit 20.
+    pub bmm_proof: Vec<u8>,
 }
-serde_struct_impl!(Block, header, txdata);
-impl_consensus_encoding!(Block, header, txdata);
+serde_struct_impl!(Block, header, txdata, bmm_proof);
+
+impl Encodable for Block {
+    fn consensus_encode<S: io::Write>(&self, mut s: S) -> Result<usize, encode::Error> {
+        let mut len = self.header.consensus_encode(&mut s)? + self.txdata.consensus_encode(&mut s)?;
+        if self.header.version & (1 << 20) != 0 { len += self.bmm_proof.consensus_encode(&mut s)?; }
+        Ok(len)
+    }
+}
+
+impl Decodable for Block {
+    fn consensus_decode<D: io::Read>(mut d: D) -> Result<Self, encode::Error> {
+        let header = BlockHeader::consensus_decode(&mut d)?;
+        let txdata = Decodable::consensus_decode(&mut d)?;
+        let bmm_proof = if header.version & (1 << 20) != 0 { Decodable::consensus_decode(&mut d)? } else { Vec::new() };
+        Ok(Block { header, txdata, bmm_proof })
+    }
+}
 
 impl Block {
     /// Return the block hash.
@@ -401,7 +496,7 @@ impl Block {
         // The size of the header + the size of the varint with the tx count + the txs themselves
         let base_size = serialize(&self.header).len() + VarInt(self.txdata.len() as u64).size();
         let txs_size: usize = self.txdata.iter().map(Transaction::size).sum();
-        base_size + txs_size
+        base_size + txs_size + self.bmm_proof_size()
     }
 
     /// Get the weight of the block
@@ -414,7 +509,11 @@ impl Block {
     pub fn weight(&self) -> usize {
         let base_weight = 4 * (serialize(&self.header).len() + VarInt(self.txdata.len() as u64).size());
         let txs_weight: usize = self.txdata.iter().map(Transaction::weight).sum();
-        base_weight + txs_weight
+        base_weight + txs_weight + 4 * self.bmm_proof_size()
+    }
+
+    fn bmm_proof_size(&self) -> usize {
+        if self.header.version & (1 << 20) != 0 { VarInt(self.bmm_proof.len() as u64).size() + self.bmm_proof.len() } else { 0 }
     }
 }
 
@@ -467,6 +566,55 @@ mod tests {
         roundtrip_header(&block.header);
         let block: Block = hex_deserialize!(&DYNAFED_BLOCK);
         roundtrip_header(&block.header);
+    }
+
+    #[test]
+    fn alpha_live_headers_match_native_hashes_and_bytes() {
+        let mut previous = None;
+        for line in include_str!("../tests/data/alpha-headers-0-86.txt").lines() {
+            let columns: Vec<_> = line.split_whitespace().collect();
+            let raw = Vec::<u8>::from_hex(columns[2]).unwrap();
+            let header: BlockHeader = encode::deserialize(&raw).unwrap();
+            assert_eq!(header.height, columns[0].parse::<u32>().unwrap());
+            assert_eq!(header.block_hash().to_string(), columns[1]);
+            assert_eq!(serialize(&header), raw);
+            if let Some(previous) = previous { assert_eq!(header.prev_blockhash, previous); }
+            previous = Some(header.block_hash());
+            for end in 0..raw.len() { assert!(encode::deserialize::<BlockHeader>(&raw[..end]).is_err()); }
+            let mut trailing = raw.clone(); trailing.push(0);
+            assert!(encode::deserialize::<BlockHeader>(&trailing).is_err());
+        }
+    }
+
+    #[test]
+    fn alpha_all_extensions_and_witness_order() {
+        for fixture in [SIMPLE_BLOCK, DYNAFED_BLOCK] {
+            let mut block: Block = hex_deserialize!(fixture);
+            block.header.version |= 0x001f_0000;
+            block.header.alpha = AlphaHeader {
+                bmm_proof: [1; 32], exchange_state: [2; 32], forced_inbox: [3; 32], deposit_inbox: [4; 32],
+                parent_height: 997086, forced_cursor: 1 << 40, deposit_cursor: 2 << 40, oldest_parent_height: 3 << 40,
+            };
+            block.bmm_proof = vec![8, 9, 10];
+            let raw = serialize(&block);
+            let decoded: Block = encode::deserialize(&raw).unwrap();
+            assert_eq!(decoded, block);
+            assert_eq!(block.size(), raw.len());
+            let hash = block.block_hash();
+            block.header.clear_witness();
+            assert_eq!(block.block_hash(), hash);
+            block.header.alpha.oldest_parent_height += 1;
+            assert_ne!(block.block_hash(), hash);
+        }
+    }
+
+    #[test]
+    fn alpha_live_activation_block_roundtrip() {
+        let raw = Vec::<u8>::from_hex(include_str!("../tests/data/alpha-activation-block-86.hex").trim()).unwrap();
+        let block: Block = encode::deserialize(&raw).unwrap();
+        assert_eq!(block.block_hash().to_string(), "2f766f3b063347baf4ea85c91ec247202745acc30e1c7f6c16c92b61e11457e4");
+        assert_eq!(serialize(&block), raw);
+        assert!(block.txdata.iter().any(|tx| tx.txid().to_string() == "876de89d40149340982d468cbdff5e797bfcf768e397c171722df4baaadb577a"));
     }
 
     #[test]

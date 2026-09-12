@@ -41,6 +41,8 @@ pub enum Network {
     LiquidTestnet,
     #[cfg(feature = "liquid")]
     LiquidRegtest,
+    #[cfg(feature = "liquid")]
+    Alpha,
 }
 
 impl Network {
@@ -54,6 +56,7 @@ impl Network {
         match self {
             Network::Liquid | Network::LiquidRegtest => 0xDAB5_BFFA,
             Network::LiquidTestnet => 0x62DD_0E41,
+            Network::Alpha => 0x3ED0_91DF,
         }
     }
 
@@ -74,6 +77,7 @@ impl Network {
             Network::Liquid => &address::AddressParams::LIQUID,
             Network::LiquidRegtest => &address::AddressParams::ELEMENTS,
             Network::LiquidTestnet => &address::AddressParams::LIQUID_TESTNET,
+            Network::Alpha => &address::AddressParams::ALPHA,
         }
     }
 
@@ -83,6 +87,7 @@ impl Network {
             Network::Liquid => &*asset::NATIVE_ASSET_ID,
             Network::LiquidTestnet => &*asset::NATIVE_ASSET_ID_TESTNET,
             Network::LiquidRegtest => &*asset::NATIVE_ASSET_ID_REGTEST,
+            Network::Alpha => &*asset::NATIVE_ASSET_ID_ALPHA,
         }
     }
 
@@ -90,6 +95,7 @@ impl Network {
     pub fn pegged_asset(self) -> Option<&'static AssetId> {
         match self {
             Network::Liquid => Some(&*asset::NATIVE_ASSET_ID),
+            Network::Alpha => Some(&*asset::NATIVE_ASSET_ID_ALPHA),
             Network::LiquidTestnet | Network::LiquidRegtest => None,
         }
     }
@@ -109,6 +115,7 @@ impl Network {
             "liquid".to_string(),
             "liquidtestnet".to_string(),
             "liquidregtest".to_string(),
+            "alpha".to_string(),
         ];
     }
 }
@@ -155,6 +162,7 @@ pub fn liquid_genesis_hash(network: Network) -> elements::BlockHash {
 
     match network {
         Network::Liquid => *LIQUID_GENESIS,
+        Network::Alpha => "672af009bd90bfc6527a5a9dda4c83aba0048c15cff3697d07e89a7f96fa5bcd".parse().unwrap(),
         // The genesis block for liquid regtest chains varies based on the chain configuration.
         // This instead uses an all zeroed-out hash, which doesn't matter in practice because its
         // only used for Electrum server discovery, which isn't active on regtest.
@@ -182,6 +190,8 @@ impl From<&str> for Network {
             "liquidtestnet" => Network::LiquidTestnet,
             #[cfg(feature = "liquid")]
             "liquidregtest" => Network::LiquidRegtest,
+            #[cfg(feature = "liquid")]
+            "alpha" => Network::Alpha,
 
             _ => panic!("unsupported Bitcoin network: {:?}", network_name),
         }
@@ -229,6 +239,7 @@ mod tests {
             prev_blockhash: BlockHash::all_zeros(),
             merkle_root: TxMerkleNode::all_zeros(),
             withdrawal_bundle_hash: Some(bundle_hash),
+            alpha: Default::default(),
             time: 1_700_000_000,
             height: 42,
             ext: BlockExtData::Proof {

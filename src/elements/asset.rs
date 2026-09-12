@@ -16,6 +16,10 @@ use crate::new_index::{db::DBFlush, ChainQuery, DBRow, Mempool, Query};
 use crate::util::{bincode, full_hash, BlockId, Bytes, FullHash, TransactionStatus, TxInput};
 
 lazy_static! {
+    pub static ref NATIVE_ASSET_ID_ALPHA: AssetId =
+        "62dce3bd80dc4b0503e7ccbb3fcfa4d7adfd64b4e0cc78fa5e1754b88f1d2da4"
+            .parse()
+            .unwrap();
     pub static ref NATIVE_ASSET_ID: AssetId =
         "6f0279e9ed041c3d710a9f57d0c02928416460c4b722ae3457a11eec381c526d"
             .parse()

@@ -162,6 +162,14 @@ pub struct AddressParams {
 }
 
 impl AddressParams {
+    /// ECX Alpha slot-24 Elements address parameters.
+    pub const ALPHA: AddressParams = AddressParams {
+        p2pkh_prefix: 68,
+        p2sh_prefix: 13,
+        blinded_prefix: 6,
+        bech_hrp: Hrp::parse_unchecked("elements"),
+        blech_hrp: Hrp::parse_unchecked("elementsl"),
+    };
     /// The Liquid network address parameters.
     pub const LIQUID: AddressParams = AddressParams {
         p2pkh_prefix: 57,
@@ -679,7 +687,7 @@ impl FromStr for Address {
         let ele = &AddressParams::ELEMENTS;
         let liq_test = &AddressParams::LIQUID_TESTNET;
 
-        let net_arr = [liq, ele, liq_test];
+        let net_arr = [liq, ele, liq_test, &AddressParams::ALPHA];
 
         let prefix = find_prefix(s);
         for net in &net_arr {
@@ -801,6 +809,22 @@ mod test {
         // Tests that the `tlq` prefix was not accidentally changed, e.g. to `tlg` :).
         let addr = Address::from_str("tlq1qq2xvpcvfup5j8zscjq05u2wxxjcyewk7979f3mmz5l7uw5pqmx6xf5xy50hsn6vhkm5euwt72x878eq6zxx2z58hd7zrsg9qn").unwrap();
         roundtrips(&addr);
+    }
+
+    #[test]
+    fn alpha_address_namespace() {
+        let pk = bitcoin::PublicKey::from_str(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        ).unwrap();
+        for addr in [
+            Address::p2pkh(&pk, None, &AddressParams::ALPHA),
+            Address::p2wpkh(&pk, None, &AddressParams::ALPHA),
+            Address::p2shwpkh(&pk, None, &AddressParams::ALPHA),
+        ] {
+            roundtrips(&addr);
+            assert!(Address::parse_with_params(&addr.to_string(), &AddressParams::ELEMENTS).is_err());
+        }
+        assert!(Address::p2wpkh(&pk, None, &AddressParams::ALPHA).to_string().starts_with("elements1"));
     }
 
     #[test]
